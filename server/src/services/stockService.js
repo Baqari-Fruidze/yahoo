@@ -47,37 +47,126 @@ const fetchCompanyFinancials = async (symbol) => {
   const facts = data.facts?.["us-gaap"] ?? {};
 
   // 5. Get latest annual value
-  const getAnnual = (tag, unit = "USD") => {
+
+  const getAnnual = (tag, unit = "USD", periodEnd = null) => {
     const entries = facts[tag]?.units?.[unit] ?? [];
 
-    const annual = entries
-      .filter((item) => {
-        if (item.form !== "10-K") return false;
-        if (!item.start) return true;
+    return (
+      entries
+        .filter((item) => {
+          if (item.form !== "10-K" || !item.end) return false;
 
-        const days = (Date.parse(item.end) - Date.parse(item.start)) / 86400000;
+          if (periodEnd && item.end !== periodEnd) return false;
 
-        return days >= 330 && days <= 400;
-      })
-      .sort(
-        (a, b) => b.end.localeCompare(a.end) || b.filed.localeCompare(a.filed),
-      );
+          // Balance Sheet: value at a specific date
+          if (!item.start) return true;
 
-    return annual[0]?.val ?? null;
+          // Income Statement / Cash Flow: full fiscal year
+          const days =
+            (Date.parse(item.end) - Date.parse(item.start)) / 86400000;
+
+          return days >= 330 && days <= 400;
+        })
+        .sort(
+          (a, b) =>
+            b.end.localeCompare(a.end) || b.filed.localeCompare(a.filed),
+        )[0] ?? null
+    );
   };
+  const latestAnnual = getAnnual("NetIncomeLoss") ?? getAnnual("Assets");
+
+  const periodEnd = latestAnnual?.end ?? null;
+
+  const getValue = (tag, unit = "USD", end = periodEnd) => {
+    if (!end) return null;
+
+    return getAnnual(tag, unit, end)?.val ?? null;
+  };
+
+  const annualEntries = facts.NetIncomeLoss?.units?.USD ?? [];
+
+  const annualPeriods = [
+    ...new Set(
+      annualEntries
+        .filter((item) => {
+          if (item.form !== "10-K" || !item.start || !item.end) {
+            return false;
+          }
+
+          const days =
+            (Date.parse(item.end) - Date.parse(item.start)) / 86400000;
+
+          return days >= 330 && days <= 400;
+        })
+        .map((item) => item.end),
+    ),
+  ]
+    .sort((a, b) => b.localeCompare(a))
+    .slice(0, 5);
+
+  const annualHistory = annualPeriods.map((end) => ({
+    periodEnd: end,
+
+    revenue:
+      getValue(
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "USD",
+        end,
+      ) ?? getValue("Revenues", "USD", end),
+
+    grossProfit: getValue("GrossProfit", "USD", end),
+
+    operatingIncome: getValue("OperatingIncomeLoss", "USD", end),
+
+    netIncome: getValue("NetIncomeLoss", "USD", end),
+
+    eps: getValue("EarningsPerShareDiluted", "USD/shares", end),
+
+    operatingCashFlow: getValue(
+      "NetCashProvidedByUsedInOperatingActivities",
+      "USD",
+      end,
+    ),
+  }));
 
   // 6. Return selected fields
   return {
     symbol: ticker,
     cik,
     companyName: data.entityName,
+
+    period: {
+      type: "annual",
+      end: periodEnd,
+      currency: "USD",
+    },
+
     financials: {
-      revenue: getAnnual("RevenueFromContractWithCustomerExcludingAssessedTax"),
-      netIncome: getAnnual("NetIncomeLoss"),
-      operatingIncome: getAnnual("OperatingIncomeLoss"),
-      eps: getAnnual("EarningsPerShareDiluted", "USD/shares"),
-      totalAssets: getAnnual("Assets"),
-      totalLiabilities: getAnnual("Liabilities"),
+      // Income Statement
+      revenue:
+        getValue("RevenueFromContractWithCustomerExcludingAssessedTax") ??
+        getValue("Revenues"),
+
+      grossProfit: getValue("GrossProfit"),
+      operatingIncome: getValue("OperatingIncomeLoss"),
+      netIncome: getValue("NetIncomeLoss"),
+      eps: getValue("EarningsPerShareDiluted", "USD/shares"),
+      researchAndDevelopment: getValue("ResearchAndDevelopmentExpense"),
+
+      // Balance Sheet
+      totalAssets: getValue("Assets"),
+      totalLiabilities: getValue("Liabilities"),
+      stockholdersEquity: getValue("StockholdersEquity"),
+      cashAndCashEquivalents: getValue("CashAndCashEquivalentsAtCarryingValue"),
+
+      // Cash Flow
+      operatingCashFlow: getValue("NetCashProvidedByUsedInOperatingActivities"),
+      capitalExpenditures: getValue(
+        "PaymentsToAcquirePropertyPlantAndEquipment",
+      ),
+    },
+    history: {
+      annual: annualHistory,
     },
   };
 };
